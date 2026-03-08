@@ -12,15 +12,15 @@ local STAR_FADE_SPEED = 0.04
 local SKY_COLORS = {
 	dawn  = { ambient = Color3.fromRGB(255, 180, 120), outdoor = Color3.fromRGB(255, 160, 100), fog = Color3.fromRGB(255, 200, 160) },
 	day   = { ambient = Color3.fromRGB(180, 210, 255), outdoor = Color3.fromRGB(140, 180, 255), fog = Color3.fromRGB(200, 220, 255) },
-	dusk  = { ambient = Color3.fromRGB(255, 140, 80), outdoor = Color3.fromRGB(230, 100, 50), fog = Color3.fromRGB(255, 160, 100) },
-	night = { ambient = Color3.fromRGB(30, 40, 80), outdoor = Color3.fromRGB(15, 20, 50), fog = Color3.fromRGB(20, 25, 60) },
+	dusk  = { ambient = Color3.fromRGB(255, 140, 80),  outdoor = Color3.fromRGB(230, 100, 50),  fog = Color3.fromRGB(255, 160, 100) },
+	night = { ambient = Color3.fromRGB(30, 40, 80),    outdoor = Color3.fromRGB(15, 20, 50),    fog = Color3.fromRGB(20, 25, 60) },
 }
 
 local FOG_RANGES = {
 	dawn  = { min = 200, max = 800 },
 	day   = { min = 800, max = 2000 },
 	dusk  = { min = 150, max = 600 },
-	night = { min = 80, max = 300 },
+	night = { min = 80,  max = 300 },
 }
 
 local BRIGHTNESS_VALUES = {
@@ -31,7 +31,7 @@ local BRIGHTNESS_VALUES = {
 }
 
 local PHASE_START_HOURS = { dawn = 5, day = 8, dusk = 18, night = 21 }
-local PHASE_END_HOURS = { dawn = 8, day = 18, dusk = 21, night = 29 }
+local PHASE_END_HOURS   = { dawn = 8, day = 18, dusk = 21, night = 29 }
 local PHASE_ORDER = { "dawn", "day", "dusk", "night" }
 
 local remoteFolder = ReplicatedStorage:FindFirstChild("DayNightRemotes")
@@ -59,6 +59,7 @@ local lastPhase = ""
 local tweenInProgress = false
 local starParts = {}
 
+-- Works out which phase of the day we're currently in based on the hour
 local function getPhaseFromHour(hour)
 	if hour >= 5 and hour < 8 then
 		return "dawn"
@@ -71,6 +72,7 @@ local function getPhaseFromHour(hour)
 	end
 end
 
+-- Cycles to the next phase in order, wrapping from night back to dawn
 local function getNextPhase(phase)
 	for i, p in ipairs(PHASE_ORDER) do
 		if p == phase then
@@ -92,10 +94,13 @@ local function lerpNumber(a, b, t)
 	return a + (b - a) * t
 end
 
+-- Makes transitions feel smoother by easing in and out instead of moving at a constant rate
 local function smoothstep(t)
 	return t * t * (3 - 2 * t)
 end
 
+-- Returns how far through the current phase we are as a 0-1 value with smoothstep applied
+-- Night needs special handling since it crosses midnight (e.g. hour 2 AM needs to become 26)
 local function getPhaseBlendFactor(hour)
 	local phase = getPhaseFromHour(hour)
 	local phaseStart = PHASE_START_HOURS[phase]
@@ -105,6 +110,7 @@ local function getPhaseBlendFactor(hour)
 	return phase, smoothstep(t)
 end
 
+-- Blends all lighting values between the current and next phase so nothing changes abruptly
 local function getBlendedPhaseValues(hour)
 	local phase, t = getPhaseBlendFactor(hour)
 	local nextPhase = getNextPhase(phase)
@@ -113,11 +119,11 @@ local function getBlendedPhaseValues(hour)
 	local fa = FOG_RANGES[phase]
 	local fb = FOG_RANGES[nextPhase]
 	return {
-		ambient = lerpColor(ca.ambient, cb.ambient, t),
-		outdoor = lerpColor(ca.outdoor, cb.outdoor, t),
-		fogColor = lerpColor(ca.fog, cb.fog, t),
-		fogMin = lerpNumber(fa.min, fb.min, t),
-		fogMax = lerpNumber(fa.max, fb.max, t),
+		ambient    = lerpColor(ca.ambient, cb.ambient, t),
+		outdoor    = lerpColor(ca.outdoor, cb.outdoor, t),
+		fogColor   = lerpColor(ca.fog, cb.fog, t),
+		fogMin     = lerpNumber(fa.min, fb.min, t),
+		fogMax     = lerpNumber(fa.max, fb.max, t),
 		brightness = lerpNumber(BRIGHTNESS_VALUES[phase], BRIGHTNESS_VALUES[nextPhase], t),
 	}
 end
@@ -132,6 +138,8 @@ local function applyLightingValues(values)
 	Lighting.ClockTime = currentTime
 end
 
+-- Spawns stars as glowing neon balls scattered randomly across the sky dome
+-- Uses spherical coordinates so they're evenly distributed rather than clumped
 local function createStars()
 	local folder = workspace:FindFirstChild("StarFolder") or Instance.new("Folder")
 	folder.Name = "StarFolder"
@@ -164,6 +172,7 @@ local function createStars()
 	end
 end
 
+-- Fades stars in at night and back out during the day, runs every frame so the transition is gradual
 local function updateStarVisibility(phase)
 	local target = (phase == "night") and 0 or 1
 	for _, star in ipairs(starParts) do
@@ -182,6 +191,9 @@ local function notifyAllClients(phase)
 	end
 end
 
+-- Handles everything that needs to happen when the phase switches:
+-- fires events, tells all clients, and tweens the lighting to the new phase colors
+-- The tween guard stops multiple tweens from running on top of each other
 local function onPhaseChanged(newPhase)
 	phaseChangedEvent:Fire(newPhase)
 	notifyAllClients(newPhase)
@@ -192,7 +204,7 @@ local function onPhaseChanged(newPhase)
 	local info = TweenInfo.new(6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 	local goal = {
 		OutdoorAmbient = SKY_COLORS[newPhase].outdoor,
-		Ambient = SKY_COLORS[newPhase].ambient,
+		Ambient        = SKY_COLORS[newPhase].ambient,
 	}
 	local tween = TweenService:Create(Lighting, info, goal)
 	tween:Play()
@@ -214,9 +226,12 @@ Players.PlayerAdded:Connect(function(player)
 	timeOfDayEvent:FireClient(player, currentPhase, currentTime)
 end)
 
+-- The main loop - runs every frame, moves the clock forward and keeps everything in sync
+local function updateStarVisibility(phase)
 RunService.Heartbeat:Connect(function(dt)
 	local hoursPerSecond = 24 / CYCLE_DURATION
 	currentTime = currentTime + hoursPerSecond * dt
+
 	if currentTime >= 24 then
 		currentTime -= 24
 	end
